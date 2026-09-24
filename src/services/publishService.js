@@ -6,6 +6,7 @@ const { safeExtract, replaceDir, mergeDir, zipDir, manifestOf, walk } = require(
 const versionService = require('./versionService');
 const { withSiteExcludes, withSiteProtects, isProtected } = require('./exclude');
 const audit = require('./auditService');
+const siteService = require('./siteService');
 
 const locks = new Map();
 
@@ -98,6 +99,11 @@ async function publish(site, zipFile, { label, user, mode, progressFiles }) {
     versionService.saveManifest(vid, manifest);
     versionService.setCurrent(site.id, vid);
     versionService.cleanup(site, user);
+    // 发布成功 → 统计落库：manifest 就是发布后站点实际状态，直接复用、不再遍历磁盘
+    siteService.saveStats(site.id, {
+      fileCount: manifest.length,
+      totalSize: manifest.reduce((a, f) => a + f.size, 0)
+    });
     audit.write(user, 'publish', site.id, 'version=' + vid + ' snapshot=' + snapshotId + ' mode=' + m);
     const p = progressMap.get(site.id);
     if (p) {
@@ -132,6 +138,8 @@ async function rollback(site, versionId, { user }) {
     const protects = withSiteProtects(site);
     replaceDir(path.join(tmp, 'extract'), site.root_path, excludes, protects);
     versionService.setCurrent(site.id, versionId);
+    // 回滚成功 → 统计实测落库（受保护文件与历史版本可能不一致，复用历史 manifest 有误差，走一次 statDir）
+    siteService.refreshStats(site);
     audit.write(user, 'rollback', site.id, 'to=' + versionId);
     return { versionId };
   } finally {

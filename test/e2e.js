@@ -100,6 +100,13 @@ async function publishZip(siteId, file, label, mode) {
   check('bind site', r.code === 200 && r.data.site, 'code=' + r.code + (r.data.error ? ' ' + r.data.error : ''));
   const siteId = r.data.site.id;
 
+  // 2a. 绑定成功后统计立即落库：GET /sites 只读库即有值（debug.log 被 *.log 排除 → fileCount=1）
+  list = await req('GET', '/sites');
+  const bound = (list.data.sites || []).find(s => s.id === siteId);
+  check('bind stats persisted immediately',
+    bound && bound.fileCount === 1 && bound.totalSize > 0 && !!bound.stats_updated_at,
+    JSON.stringify(bound && { fc: bound.fileCount, ts: bound.totalSize, at: bound.stats_updated_at }));
+
   // 2b. 重复绑定应失败
   r = await req('POST', '/sites', { name: 'Dup', root_path: siteDir });
   check('duplicate bind rejected', r.code === 400, 'code=' + r.code);
@@ -400,6 +407,85 @@ async function publishZip(siteId, file, label, mode) {
   check('batch append writes audit', r.code === 200 &&
     (r.data.logs || []).some(l => String(l.detail || '').includes('appended')),
     'logs=' + (r.data.logs && r.data.logs.length));
+
+  // ===== 17. 站点统计持久化：GET /sites 只读库、事件触发落库、refresh 手动重算 =====
+  const getStats = async () => {
+    const rr = await req('GET', '/sites');
+    return (rr.data.sites || []).find(s => s.id === siteId) || {};
+  };
+
+  // 17a. 黑盒证明 GET /sites 不遍历磁盘：直接往磁盘写文件 → GET 统计不变；refresh 后 +1
+  const st0 = await getStats();
+  fs.writeFileSync(path.join(siteDir, 'disk-probe.txt'), 'probe');
+  const stProbe = await getStats();
+  check('GET /sites ignores disk change (no traversal)',
+    stProbe.fileCount === st0.fileCount && stProbe.stats_updated_at === st0.stats_updated_at,
+    `before=${st0.fileCount}@${st0.stats_updated_at} after=${stProbe.fileCount}@${stProbe.stats_updated_at}`);
+  r = await req('POST', `/sites/${siteId}/refresh`);
+  check('refresh recomputes and returns new stats',
+    r.code === 200 && r.data.site.fileCount === st0.fileCount + 1 &&
+    typeof r.data.site.totalSize === 'number' && !!r.data.site.stats_updated_at,
+    'code=' + r.code + ' fc=' + (r.data.site && r.data.site.fileCount) + ' prev=' + st0.fileCount);
+  const stRefreshed = await getStats();
+  check('refresh result readable back from GET /sites',
+    stRefreshed.fileCount === st0.fileCount + 1 &&
+    stRefreshed.stats_updated_at === r.data.site.stats_updated_at,
+    `fc=${stRefreshed.fileCount} at=${stRefreshed.stats_updated_at}`);
+
+  // 17b. 发布成功后统计自动更新（复用发布 manifest 落库）：统计应与该版本 version_files（同一 manifest）一致
+  const beforePub = await getStats();
+  const pubStats = await publishZip(siteId, z1, 'stats check');
+  const afterPub = await getStats();
+  const vfStats = await req('GET', `/sites/${siteId}/versions/${pubStats.data.versionId}/files`);
+  check('publish updates stats',
+    pubStats.code === 200 && afterPub.stats_updated_at !== beforePub.stats_updated_at &&
+    afterPub.fileCount === vfStats.data.files.length,
+    `code=${pubStats.code} fc=${afterPub.fileCount} manifest=${vfStats.data.files.length} ` +
+    `${beforePub.stats_updated_at} -> ${afterPub.stats_updated_at}`);
+
+  // 17c. 回滚成功后统计实测更新（取最新且快照必然存在的版本作回滚目标）
+  const vsStats = await req('GET', `/sites/${siteId}/versions`);
+  const rbTarget = vsStats.data.versions[0].id;
+  const beforeRb = await getStats();
+  r = await req('POST', `/sites/${siteId}/rollback`, { versionId: rbTarget });
+  const afterRb = await getStats();
+  check('rollback updates stats',
+    r.code === 200 && afterRb.stats_updated_at !== beforeRb.stats_updated_at,
+    `code=${r.code} ${beforeRb.stats_updated_at} -> ${afterRb.stats_updated_at}`);
+
+  // 17d. 在线编辑保存后统计更新（内容长度变化 → totalSize 变化）
+  const beforeEdit = await getStats();
+  r = await req('PUT', `/sites/${siteId}/file`, { path: 'index.html', content: '<h1>stats-edit-verification-payload</h1>' });
+  const afterEdit = await getStats();
+  check('file edit updates stats',
+    r.code === 200 && afterEdit.stats_updated_at !== beforeEdit.stats_updated_at &&
+    afterEdit.totalSize !== beforeEdit.totalSize,
+    `code=${r.code} size ${beforeEdit.totalSize} -> ${afterEdit.totalSize}`);
+
+  // 17e. excludes 变更影响统计口径 → 自动重算落库；还原后随之恢复
+  const beforeEx = await getStats();
+  r = await req('PUT', `/sites/${siteId}`, { excludes: ['*.log', 'index.html'] });
+  const afterEx = await getStats();
+  check('excludes change refreshes stats',
+    r.code === 200 && afterEx.fileCount === beforeEx.fileCount - 1 &&
+    afterEx.stats_updated_at !== beforeEx.stats_updated_at,
+    `code=${r.code} ${beforeEx.fileCount} -> ${afterEx.fileCount}`);
+  r = await req('PUT', `/sites/${siteId}`, { excludes: ['*.log'] });
+  const restoredEx = await getStats();
+  check('excludes restore refreshes stats',
+    r.code === 200 && restoredEx.fileCount === beforeEx.fileCount,
+    `${beforeEx.fileCount} -> ${restoredEx.fileCount}`);
+
+  // 17f. 源码级静态断言：GET /sites 读库不调 statDir、refresh 路由存在、前端两处刷新按钮、NULL 惰性兜底
+  const sitesSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'sites.js'), 'utf8');
+  const getListBody = sitesSrc.slice(sitesSrc.indexOf("router.get('/'"), sitesSrc.indexOf("router.post('/'"));
+  check('GET /sites reads db not statDir', !getListBody.includes('statDir'), 'routes/sites.js GET');
+  check('lazy backfill present', sitesSrc.includes('ensureStats'), 'routes/sites.js');
+  check('refresh route exists', sitesSrc.includes("router.post('/:id/refresh'"), 'routes/sites.js');
+  check('frontend refresh buttons (card + detail)',
+    (appSrc.match(/刷新统计/g) || []).length >= 2, 'app.js');
+  r = await req('POST', '/sites/999999/refresh');
+  check('refresh missing site 404', r.code === 404, 'code=' + r.code);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

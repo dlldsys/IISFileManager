@@ -33,6 +33,8 @@ router.put('/:id/file', (req, res) => {
   try {
     const site = mustSite(req, res); if (!site) return;
     const r = fileService.save(site, req.body.path, req.body.content);
+    // 在线编辑保存成功 → 该站点统计重新落库（事件级一次遍历，非请求级）
+    siteService.refreshStats(siteService.getSite(site.id) || site);
     audit.write(req.session.user.username, 'file.save', site.id, r.path);
     res.json(r);
   } catch (e) { res.status(400).json({ error: e.message }); }

@@ -78,6 +78,36 @@ function statDir(site) {
   return { fileCount: files.length, totalSize: files.reduce((a, f) => a + f.size, 0) };
 }
 
+// 统计重算并落库（GET /sites 只读缓存，绑定/发布/回滚/编辑/设置变更/手动刷新时调用）
+function refreshStats(site) {
+  let st;
+  try { st = statDir(site); } catch { st = { fileCount: 0, totalSize: 0 }; }
+  const at = new Date().toISOString();
+  db.prepare('UPDATE sites SET file_count = ?, total_size = ?, stats_updated_at = ? WHERE id = ?')
+    .run(st.fileCount, st.totalSize, at, site.id);
+  return { ...st, statsUpdatedAt: at };
+}
+
+// 发布/回滚等已有清单（manifest）的场景：直接复用结果落库，避免重复遍历磁盘
+function saveStats(siteId, { fileCount, totalSize }) {
+  const at = new Date().toISOString();
+  db.prepare('UPDATE sites SET file_count = ?, total_size = ?, stats_updated_at = ? WHERE id = ?')
+    .run(fileCount, totalSize, at, siteId);
+  return { fileCount, totalSize, statsUpdatedAt: at };
+}
+
+// 存量站点 stats 为 NULL 的一次性兜底：首次读到时算一次并回写
+function ensureStats(site) {
+  if (site.stats_updated_at != null) {
+    return { fileCount: site.file_count || 0, totalSize: site.total_size || 0, statsUpdatedAt: site.stats_updated_at };
+  }
+  const st = refreshStats(site);
+  site.file_count = st.fileCount;
+  site.total_size = st.totalSize;
+  site.stats_updated_at = st.statsUpdatedAt;
+  return st;
+}
+
 function resolveIn(site, rel) {
   const abs = path.resolve(site.root_path, rel || '');
   const root = path.resolve(site.root_path);
@@ -103,4 +133,7 @@ function browse(site, rel) {
   return { path: rel || '', dirs, files };
 }
 
-module.exports = { listSites, getSite, addSite, updateSite, appendSiteSettings, removeSite, statDir, browse, resolveIn };
+module.exports = {
+  listSites, getSite, addSite, updateSite, appendSiteSettings, removeSite,
+  statDir, refreshStats, saveStats, ensureStats, browse, resolveIn
+};

@@ -173,6 +173,16 @@ if (!hasColumn('versions', 'mode')) {
 if (!hasColumn('sites', 'current_version_id')) {
   db.exec('ALTER TABLE sites ADD COLUMN current_version_id INTEGER');
 }
+// 站点统计缓存：GET /sites 只读库不遍历磁盘（NULL = 尚未统计过，首次读取惰性计算回写）
+if (!hasColumn('sites', 'file_count')) {
+  db.exec('ALTER TABLE sites ADD COLUMN file_count INTEGER');
+}
+if (!hasColumn('sites', 'total_size')) {
+  db.exec('ALTER TABLE sites ADD COLUMN total_size INTEGER');
+}
+if (!hasColumn('sites', 'stats_updated_at')) {
+  db.exec('ALTER TABLE sites ADD COLUMN stats_updated_at TEXT');
+}
 
 if (!db.prepare('SELECT id FROM users WHERE username = ?').get(config.adminUser)) {
   db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)')

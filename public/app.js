@@ -81,6 +81,20 @@ const SitesPage = {
       catch (e) { props.notify(e.message, 'err'); }
     };
     onMounted(load);
+    // 手动刷新统计：POST /sites/:id/refresh 重算落库，直接回填卡片
+    const refreshing = ref(0);
+    const refreshStats = async (s, ev) => {
+      if (ev) ev.stopPropagation();
+      refreshing.value = s.id;
+      try {
+        const r = await api(`/sites/${s.id}/refresh`, { method: 'POST' });
+        s.fileCount = r.site.fileCount;
+        s.totalSize = r.site.totalSize;
+        s.stats_updated_at = r.site.stats_updated_at;
+        props.notify('统计已刷新');
+      } catch (e) { props.notify(e.message, 'err'); }
+      finally { refreshing.value = 0; }
+    };
     const openAdd = () => {
       Object.assign(form, { name: '', root_path: '', excludes: '*.log\nnode_modules\n.git', protect_files: 'web.config\nWeb.config', keep_count: 10 });
       showModal.value = true;
@@ -99,7 +113,7 @@ const SitesPage = {
         load();
       } catch (e) { props.notify(e.message, 'err'); }
     };
-    return { sites, showModal, form, openAdd, save };
+    return { sites, showModal, form, openAdd, save, refreshing, refreshStats };
   },
   template: `
   <div>
@@ -115,6 +129,10 @@ const SitesPage = {
           <span>{{ s.fileCount }} 个文件</span>
           <span>{{ fmtSize(s.totalSize) }}</span>
           <span class="stat-new" v-if="s.latest">最新 v{{ s.latest.id }}</span>
+          <button class="btn-secondary" style="margin-left:auto;padding:2px 8px;font-size:12px"
+            :disabled="refreshing===s.id" @click="refreshStats(s, $event)">
+            {{ refreshing===s.id ? '刷新中...' : '刷新统计' }}
+          </button>
         </div>
         <div class="card-hint muted">点击进入站点详情 →</div>
       </div>
@@ -642,7 +660,20 @@ const SiteDetailPage = {
     onMounted(loadSite);
     watch(() => props.siteId, loadSite);
     const goTab = k => props.navigate('#/sites/' + props.siteId + (k === 'files' ? '/files' : '/' + k));
-    return { site, tabs, active, goTab };
+    // 详情页刷新统计：调 refresh 接口后回填头部统计
+    const refreshing = ref(false);
+    const refreshStats = async () => {
+      refreshing.value = true;
+      try {
+        const r = await api(`/sites/${props.siteId}/refresh`, { method: 'POST' });
+        if (site.value) Object.assign(site.value, {
+          fileCount: r.site.fileCount, totalSize: r.site.totalSize, stats_updated_at: r.site.stats_updated_at
+        });
+        props.notify('统计已刷新');
+      } catch (e) { props.notify(e.message, 'err'); }
+      finally { refreshing.value = false; }
+    };
+    return { site, tabs, active, goTab, refreshing, refreshStats };
   },
   template: `
   <div>
@@ -657,6 +688,10 @@ const SiteDetailPage = {
       <div class="stats-inline" v-if="site">
         <span>{{ site.fileCount }} 个文件</span><span>{{ $root.fmtSize(site.totalSize) }}</span>
         <span class="stat-new" v-if="site.latest">最新 v{{ site.latest.id }}</span>
+        <button class="btn-secondary" style="padding:2px 8px;font-size:12px"
+          :disabled="refreshing" @click="refreshStats">
+          {{ refreshing ? '刷新中...' : '刷新统计' }}
+        </button>
       </div>
     </div>
 
