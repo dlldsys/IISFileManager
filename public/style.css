@@ -190,6 +190,9 @@ input::placeholder, textarea::placeholder { color: var(--color-mist); }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--spacing-20); margin-bottom: var(--spacing-16); }
 .site-card { background: var(--color-bone); border: 1px solid var(--hairline); border-radius: var(--radius-cards); padding: var(--card-padding); display: flex; flex-direction: column; }
+.site-card.clickable { cursor: pointer; transition: border-color 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms cubic-bezier(0.4, 0, 0.2, 1); }
+.site-card.clickable:hover { border-color: var(--color-stone); box-shadow: var(--shadow-subtle); }
+.site-card .card-hint { margin-top: auto; padding-top: var(--spacing-8); font-size: 12px; }
 .site-card h3 { font-size: var(--text-heading-sm); font-weight: 400; letter-spacing: -0.11px; display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-8); }
 .site-card .path { font-family: var(--font-berkeleymono); font-size: 12px; color: var(--color-ash); word-break: break-all; margin-bottom: var(--spacing-16); }
 .site-card .stats { display: flex; gap: var(--spacing-16); color: var(--color-driftwood); font-size: 13px; margin-bottom: var(--spacing-20); padding-bottom: var(--spacing-16); border-bottom: 1px solid var(--color-linen); }
@@ -325,6 +328,7 @@ td .mono, td.mono { font-family: var(--font-berkeleymono); font-size: 12px; }
 .diff-summary b { font-weight: 500; color: var(--color-ink); }
 
 .diff-cols { display: grid; grid-template-template: none; grid-template-columns: 1fr 1fr 1fr; gap: var(--spacing-12); }
+.diff-cols.two { grid-template-columns: 1fr 1fr; }
 .diff-col { background: var(--color-parchment); border: 1px solid var(--hairline); border-radius: var(--radius-cards); padding: var(--spacing-12); }
 .diff-col h4 {
   font-family: var(--font-berkeleymono);
@@ -347,6 +351,44 @@ td .mono, td.mono { font-family: var(--font-berkeleymono); font-size: 12px; }
 
 .muted { color: var(--color-mist); font-size: 13px; }
 .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- 站点详情：功能 tab 条 ---------- */
+.detail-tabs {
+  display: flex;
+  gap: var(--spacing-20);
+  border-bottom: 1px solid var(--color-stone);
+  margin-bottom: var(--spacing-20);
+}
+.detail-tabs a {
+  padding: 8px 2px 10px;
+  color: color-mix(in oklab, var(--color-ink) 60%, transparent);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-size: var(--text-body-sm);
+}
+.detail-tabs a:hover { color: var(--color-ink); text-decoration: none; }
+.detail-tabs a.active { color: var(--color-ink); border-bottom-color: var(--color-ember); }
+.stats-inline {
+  display: flex;
+  gap: var(--spacing-16);
+  color: var(--color-driftwood);
+  font-size: 13px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.stats-inline .stat-new { color: var(--color-ember); }
+
+/* ---------- 发布替换进度条 ---------- */
+.progress-wrap {
+  margin-bottom: var(--spacing-16);
+  padding: var(--spacing-12);
+  background: var(--color-parchment);
+  border: 1px solid var(--color-stone);
+  border-radius: var(--radius-cards);
+}
+.progress-text { font-family: var(--font-berkeleymono); font-size: 12px; color: var(--color-ash); margin-bottom: var(--spacing-8); }
+.progress-bar { height: 8px; background: var(--color-linen); border-radius: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--color-forest); width: 0; transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1); }
 
 /* ---------- 顶部导航条：面包屑 + 前进/后退 ---------- */
 .topbar {

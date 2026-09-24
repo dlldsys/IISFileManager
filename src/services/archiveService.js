@@ -81,12 +81,14 @@ function safeExtract(zipPath, destDir) {
 
 // ===== 目录替换三种语义 =====
 // 共同规则：excludes 文件不处理（站点原样保留）；protect 文件永不覆盖、永不删除。
-function copyEntries(srcDir, destDir, { protects }) {
+// onProgress：每成功写入一个文件回调一次（供发布进度统计）
+function copyEntries(srcDir, destDir, { protects }, onProgress) {
   for (const f of walk(srcDir, [])) {
     if (isProtected(f.rel, protects)) continue; // zip 里含 web.config 等受保护文件 → 忽略
     const target = path.join(destDir, f.rel);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(f.abs, target);
+    if (onProgress) onProgress(f.rel);
   }
 }
 
@@ -99,16 +101,16 @@ function removeUnwanted(destDir, { excludes, protects }) {
 }
 
 // 全量发布 / 彻底还原回滚：先删除站点非排除非保护文件，再整包覆盖（跳过保护文件）
-function replaceDir(srcDir, destDir, excludes, protects = []) {
+function replaceDir(srcDir, destDir, excludes, protects = [], onProgress) {
   fs.mkdirSync(destDir, { recursive: true });
   removeUnwanted(destDir, { excludes, protects });
-  copyEntries(srcDir, destDir, { protects });
+  copyEntries(srcDir, destDir, { protects }, onProgress);
 }
 
 // 增量发布：只新增/覆盖同路径文件，不删除站点上多余的文件
-function mergeDir(srcDir, destDir, excludes, protects = []) {
+function mergeDir(srcDir, destDir, excludes, protects = [], onProgress) {
   fs.mkdirSync(destDir, { recursive: true });
-  copyEntries(srcDir, destDir, { protects });
+  copyEntries(srcDir, destDir, { protects }, onProgress);
 }
 
 module.exports = { walk, zipDir, manifestOf, safeExtract, replaceDir, mergeDir, sha256File };

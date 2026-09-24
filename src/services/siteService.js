@@ -34,7 +34,10 @@ function updateSite(id, { name, excludes, keep_count, protect_files }) {
   if (excludes != null) rawExcludes = JSON.stringify(excludes);
   else if (Array.isArray(rawExcludes)) rawExcludes = JSON.stringify(rawExcludes);
   let rawProtect = JSON.stringify(s.protect_files || []);
-  if (protect_files != null) rawProtect = JSON.stringify(protect_files);
+  if (protect_files != null) {
+    // 置空 → 回落默认保护文件（含 web.config），与运行时 withSiteProtects 兜底行为一致
+    rawProtect = JSON.stringify(protect_files.length ? protect_files : config.defaultProtects);
+  }
   db.prepare('UPDATE sites SET name = ?, excludes = ?, keep_count = ?, protect_files = ? WHERE id = ?').run(
     name != null ? name : s.name,
     rawExcludes,

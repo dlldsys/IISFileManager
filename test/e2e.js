@@ -234,8 +234,9 @@ async function publishZip(siteId, file, label, mode) {
   check('incremental preview skipped protected',
     pvi.code === 200 && (pvi.data.skipped || []).some(f => f.path === 'web.config' && f.note === '已跳过-受保护'),
     'code=' + pvi.code + ' skipped=' + JSON.stringify(pvi.data.skipped));
-  check('incremental preview removed noted',
-    pvi.code === 200 && (pvi.data.removed || []).some(f => f.path === 'stray.txt' && f.note === '增量不删除'),
+  // 需求6：增量预览不显示删除 —— removed 恒为空数组，无"增量不删除"标注
+  check('incremental preview removed empty',
+    pvi.code === 200 && Array.isArray(pvi.data.removed) && pvi.data.removed.length === 0,
     'removed=' + JSON.stringify(pvi.data.removed));
   check('preview mode echoed', pvi.code === 200 && pvi.data.mode === 'incremental', 'mode=' + pvi.data.mode);
 
@@ -303,6 +304,59 @@ async function publishZip(siteId, file, label, mode) {
   // 删除不存在的版本 → 404
   r = await req('DELETE', `/sites/${siteId}/versions/${delId}`);
   check('delete missing version 404', r.code === 404, 'code=' + r.code);
+
+  // ===== 16. 本批新增断言 =====
+
+  // 16a. 上传大小不限制：config 与上传路由均无 maxUploadSize / limits.fileSize
+  const configSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'config.js'), 'utf8');
+  const publishSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'publish.js'), 'utf8');
+  check('no maxUploadSize in config', !configSrc.includes('maxUploadSize'), 'config.js');
+  check('no multer fileSize limit', !publishSrc.includes('fileSize') && !publishSrc.includes('limits'), 'routes/publish.js');
+  // 编辑 2MB 限制仍保留
+  const fileSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'fileService.js'), 'utf8');
+  check('edit 2MB limit kept', fileSrc.includes('maxEditSize'), 'fileService.js');
+
+  // 16b. 站点设置接口：excludes + protect_files 可配置、读回一致（默认含 web.config，大小写不敏感）
+  r = await req('PUT', `/sites/${siteId}`, { excludes: ['*.log', 'temp/**'], protect_files: ['web.config', 'appsettings.json'] });
+  check('update site settings', r.code === 200 && r.data.site.excludes.includes('*.log') &&
+    r.data.site.protect_files.includes('web.config') && r.data.site.protect_files.includes('appsettings.json'),
+    'code=' + r.code + ' excludes=' + JSON.stringify(r.data.site && r.data.site.excludes));
+  // 清空 protect_files 回落到默认（含 web.config）
+  r = await req('PUT', `/sites/${siteId}`, { protect_files: [] });
+  const siteRow = ((await req('GET', '/sites')).data.sites || []).find(s => s.id === siteId);
+  check('protect_files default has web.config', siteRow && (siteRow.protect_files || []).some(p => p.toLowerCase() === 'web.config'),
+    JSON.stringify(siteRow && siteRow.protect_files));
+  // 前端详情页路由/设置分区存在（SPA 无构建，直接断言 app.js 内容）
+  const appSrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  check('detail page route & settings tab',
+    appSrc.includes('site-detail-page') && appSrc.includes('\\/sites\\/(\\d+)') &&
+    appSrc.includes('settings-page') && appSrc.includes('detail-tabs'),
+    'app.js');
+  check('no redundant back-to-parent button', !appSrc.includes('返回上级'), 'app.js');
+
+  // 16c. 发布进度：confirm 返回 {total, replaced}，进度接口可查询
+  r = await uploadZip(siteId, z1, 'progress check');
+  const pvProg = r.data;
+  r = await confirmZip(siteId, pvProg.token);
+  check('confirm returns progress totals',
+    r.code === 200 && typeof r.data.total === 'number' && typeof r.data.replaced === 'number' && r.data.total >= r.data.replaced,
+    'code=' + r.code + ' total=' + r.data.total + ' replaced=' + r.data.replaced);
+  r = await req('GET', `/publish/${siteId}/progress`);
+  check('progress endpoint works',
+    r.code === 200 && (r.data.status === 'done' || r.data.status === 'idle') && typeof r.data.total === 'number',
+    'code=' + r.code + ' status=' + (r.data && r.data.status));
+
+  // 16d. 删除版本时对应快照 zip 已不在磁盘 → 只删记录、不报错
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  const victim = vs.data.versions[vs.data.versions.length - 1];
+  const victimZip = path.join(__dirname, '..', 'data', 'snapshots', String(siteId), victim.id + '.zip');
+  fs.rmSync(victimZip, { force: true });
+  r = await req('DELETE', `/sites/${siteId}/versions/${victim.id}`);
+  check('delete version with missing zip ok', r.code === 200 && r.data.ok === true,
+    'code=' + r.code + ' ' + (r.data.error || ''));
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  check('missing-zip version record removed', !vs.data.versions.some(v => v.id === victim.id),
+    'count=' + vs.data.versions.length);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

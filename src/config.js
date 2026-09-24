@@ -11,7 +11,6 @@ module.exports = {
   adminUser: process.env.ADMIN_USER || 'admin',
   adminPass: process.env.ADMIN_PASS || 'admin123',
   maxEditSize: 2 * 1024 * 1024,
-  maxUploadSize: 500 * 1024 * 1024,
   defaultExcludes: ['*.log', 'node_modules', '.git'],
   defaultProtects: ['web.config', 'Web.config'],
   defaultKeep: 10

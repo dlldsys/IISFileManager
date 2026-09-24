@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
+const { createApp, ref, reactive, computed, onMounted, watch, onUnmounted } = Vue;
 
 async function api(url, opts = {}) {
   const init = { headers: {}, ...opts };
@@ -47,11 +47,11 @@ const ConfirmModal = {
   </div>`
 };
 
-// ===== 差异三列展示（发布预览 / 版本对比复用） =====
+// ===== 差异三列展示（发布预览 / 版本对比复用）；hideRemoved=true 时整个删除类目不展示（增量模式） =====
 const DiffColumns = {
-  props: { diff: { type: Object, required: true } },
+  props: { diff: { type: Object, required: true }, hideRemoved: Boolean },
   template: `
-  <div class="diff-cols">
+  <div class="diff-cols" :class="{ two: hideRemoved }">
     <div class="diff-col added">
       <h4>新增 · {{ diff.added.length }}</h4>
       <ul><li v-for="f in diff.added" :key="'a'+f.path"><span>{{ f.path }}</span><span class="delta">{{ f.size != null ? $root.fmtSize(f.size) : '' }}</span></li></ul>
@@ -62,7 +62,7 @@ const DiffColumns = {
       <ul><li v-for="f in diff.modified" :key="'m'+f.path"><span>{{ f.path }}</span><span class="delta" v-if="f.from != null">{{ $root.fmtSize(f.from) }} → {{ $root.fmtSize(f.to) }}</span></li></ul>
       <div class="empty" v-if="!diff.modified.length">无修改文件</div>
     </div>
-    <div class="diff-col removed">
+    <div class="diff-col removed" v-if="!hideRemoved">
       <h4>删除 · {{ diff.removed.length }}</h4>
       <ul><li v-for="f in diff.removed" :key="'d'+f.path"><span>{{ f.path }}</span><span class="delta" v-if="f.note">{{ f.note }}</span><span class="delta" v-else-if="f.size != null">{{ $root.fmtSize(f.size) }}</span></li></ul>
       <div class="empty" v-if="!diff.removed.length">无删除文件</div>
@@ -75,22 +75,14 @@ const SitesPage = {
   setup(props) {
     const sites = ref([]);
     const showModal = ref(false);
-    const editing = ref(null);
     const form = reactive({ name: '', root_path: '', excludes: '*.log\nnode_modules\n.git', protect_files: 'web.config\nWeb.config', keep_count: 10 });
-    const confirmState = reactive({ show: false, site: null, busy: false });
     const load = async () => {
       try { sites.value = (await api('/sites')).sites; }
       catch (e) { props.notify(e.message, 'err'); }
     };
     onMounted(load);
     const openAdd = () => {
-      editing.value = null;
       Object.assign(form, { name: '', root_path: '', excludes: '*.log\nnode_modules\n.git', protect_files: 'web.config\nWeb.config', keep_count: 10 });
-      showModal.value = true;
-    };
-    const openEdit = s => {
-      editing.value = s.id;
-      Object.assign(form, { name: s.name, root_path: s.root_path, excludes: (s.excludes || []).join('\n'), protect_files: (s.protect_files || []).join('\n'), keep_count: s.keep_count });
       showModal.value = true;
     };
     const save = async () => {
@@ -101,26 +93,13 @@ const SitesPage = {
         keep_count: Number(form.keep_count)
       };
       try {
-        if (editing.value) await api('/sites/' + editing.value, { method: 'PUT', body });
-        else await api('/sites', { method: 'POST', body });
+        await api('/sites', { method: 'POST', body });
         showModal.value = false;
         props.notify('保存成功');
         load();
       } catch (e) { props.notify(e.message, 'err'); }
     };
-    // 解绑确认：应用内弹窗（仅按钮关闭）
-    const askRemove = s => { confirmState.site = s; confirmState.show = true; };
-    const doRemove = async () => {
-      confirmState.busy = true;
-      try {
-        await api('/sites/' + confirmState.site.id, { method: 'DELETE' });
-        confirmState.show = false;
-        props.notify('已解绑');
-        load();
-      } catch (e) { props.notify(e.message, 'err'); }
-      finally { confirmState.busy = false; }
-    };
-    return { sites, showModal, editing, form, openAdd, openEdit, save, confirmState, askRemove, doRemove };
+    return { sites, showModal, form, openAdd, save };
   },
   template: `
   <div>
@@ -129,7 +108,7 @@ const SitesPage = {
       <button class="btn-primary" @click="openAdd">+ 绑定目录</button>
     </div>
     <div class="grid">
-      <div class="site-card" v-for="s in sites" :key="s.id">
+      <div class="site-card clickable" v-for="s in sites" :key="s.id" @click="navigate('#/sites/'+s.id)" title="进入站点详情">
         <h3>{{ s.name }} <span v-if="s.locked" class="badge lock">发布中</span></h3>
         <div class="path">{{ s.root_path }}</div>
         <div class="stats">
@@ -137,22 +116,16 @@ const SitesPage = {
           <span>{{ fmtSize(s.totalSize) }}</span>
           <span class="stat-new" v-if="s.latest">最新 v{{ s.latest.id }}</span>
         </div>
-        <div class="actions">
-          <button class="btn-secondary" @click="navigate('#/sites/'+s.id+'/files')">浏览/编辑</button>
-          <button class="btn-primary" @click="navigate('#/sites/'+s.id+'/publish')">发布</button>
-          <button class="btn-secondary" @click="navigate('#/sites/'+s.id+'/versions')">版本历史</button>
-          <button class="btn-ghost" @click="openEdit(s)">设置</button>
-          <button class="btn-danger" @click="askRemove(s)">解绑</button>
-        </div>
+        <div class="card-hint muted">点击进入站点详情 →</div>
       </div>
     </div>
     <div v-if="!sites.length" class="card muted">还没有绑定目录，点击右上角绑定 IIS 站点的工作目录。</div>
 
     <div v-if="showModal" class="modal-mask">
       <div class="modal">
-        <div class="modal-title">{{ editing ? '站点设置' : '绑定工作目录' }}</div>
+        <div class="modal-title">绑定工作目录</div>
         <div class="form-row"><label>站点名称</label><input v-model="form.name" placeholder="如：Default Web Site" /></div>
-        <div class="form-row" v-if="!editing"><label>目录绝对路径</label><input v-model="form.root_path" placeholder="D:\\inetpub\\wwwroot\\myapp" /></div>
+        <div class="form-row"><label>目录绝对路径</label><input v-model="form.root_path" placeholder="D:\\inetpub\\wwwroot\\myapp" /></div>
         <div class="form-row"><label>排除规则（每行一个 glob，不参与快照/统计）</label><textarea rows="3" v-model="form.excludes"></textarea></div>
         <div class="form-row"><label>受保护文件（每行一个文件名，参与快照但发布/回滚不覆盖）</label><textarea rows="2" v-model="form.protect_files" placeholder="web.config"></textarea></div>
         <div class="form-row"><label>保留版本数</label><input type="number" v-model.number="form.keep_count" min="1" /></div>
@@ -162,16 +135,6 @@ const SitesPage = {
         </div>
       </div>
     </div>
-
-    <confirm-modal
-      :show="confirmState.show"
-      title="确认解绑"
-      :message="'确认解绑「' + (confirmState.site ? confirmState.site.name : '') + '」？\\n目录内文件不会被删除，但版本快照记录将不可见。'"
-      confirm-text="确认解绑"
-      danger
-      :busy="confirmState.busy"
-      @confirm="doRemove"
-      @cancel="confirmState.show=false" />
   </div>`
 };
 
@@ -283,20 +246,40 @@ const PublishPage = {
       } finally { busy.value = false; }
     };
 
-    // 阶段二：凭 token 确认发布
+    // 阶段二：凭 token 确认发布；确认后并行轮询进度接口渲染进度条
+    const progress = ref(null); // { status, phase, total, replaced }
+    let pollTimer = null;
+    const pollProgress = () => {
+      if (pollTimer) return;
+      pollTimer = setInterval(async () => {
+        try {
+          const st = await api(`/publish/${props.siteId}/progress`);
+          progress.value = st;
+          if (st.status !== 'running') { clearInterval(pollTimer); pollTimer = null; }
+        } catch { /* 忽略瞬时错误，继续轮询 */ }
+      }, 200);
+    };
+    onUnmounted(() => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } });
     const confirmPublish = async () => {
       if (!preview.value) return;
       publishing.value = true; locked.value = false;
+      progress.value = { status: 'running', phase: 'preparing', total: 0, replaced: 0 };
+      pollProgress();
       try {
         const r = await api(`/publish/${props.siteId}/confirm`, { method: 'POST', body: { token: preview.value.token } });
+        if (r.total != null) progress.value = { status: 'done', phase: 'done', total: r.total, replaced: r.replaced };
         props.notify('发布成功，版本 v' + r.versionId);
         reset();
         props.navigate('#/sites/' + props.siteId + '/versions');
       } catch (e) {
         if (/发布\/回滚中/.test(e.message)) locked.value = true;
         if (/过期|不存在/.test(e.message)) preview.value = null;
+        progress.value = null;
         props.notify(e.message, 'err');
-      } finally { publishing.value = false; }
+      } finally {
+        publishing.value = false;
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
     };
 
     // 取消预览：服务端删除 token 与临时 zip
@@ -307,7 +290,7 @@ const PublishPage = {
       props.notify('已取消预览');
     };
 
-    return { file, label, mode, busy, publishing, locked, preview, onFile, reset, doPreview, confirmPublish, cancelPreview };
+    return { file, label, mode, busy, publishing, locked, preview, progress, onFile, reset, doPreview, confirmPublish, cancelPreview };
   },
   template: `
   <div>
@@ -329,7 +312,6 @@ const PublishPage = {
       </p>
       <div v-if="locked" class="badge lock" style="margin-bottom:10px">该站点正在发布/回滚中，请稍后再试</div>
       <button class="btn-primary" @click="doPreview" :disabled="busy">{{ busy ? '解析中...' : '上传并预览差异' }}</button>
-      <button class="btn-ghost" style="margin-left:10px" @click="navigate('#/sites/'+siteId+'/versions')">返回版本历史</button>
     </div>
 
     <div class="card" v-else>
@@ -344,20 +326,23 @@ const PublishPage = {
         <div class="diff-summary">
           <span>新增 <b>{{ preview.added.length }}</b></span>
           <span>修改 <b>{{ preview.modified.length }}</b></span>
-          <span>删除 <b>{{ preview.removed.length }}</b><template v-if="preview.mode==='incremental'">（增量不删除）</template></span>
+          <span v-if="preview.mode!=='incremental'">删除 <b>{{ preview.removed.length }}</b></span>
           <span v-if="preview.skipped && preview.skipped.length">已跳过-受保护 <b>{{ preview.skipped.length }}</b></span>
           <span>模式 <b>{{ preview.mode==='incremental' ? '增量' : '全量' }}</b></span>
         </div>
-        <diff-columns :diff="preview" />
+        <diff-columns :diff="preview" :hide-removed="preview.mode==='incremental'" />
         <div v-if="preview.skipped && preview.skipped.length" class="token-line" style="margin-top:8px">
           已跳过-受保护：{{ preview.skipped.map(f => f.path).join('、') }}
         </div>
       </div>
       <p class="prose" style="margin:16px 0">确认后才会按所选模式更新站点文件并生成新版本；取消则本次上传作废。</p>
       <div v-if="locked" class="badge lock" style="margin-bottom:10px">该站点正在发布/回滚中，请稍后再试</div>
+      <div v-if="publishing && progress" class="progress-wrap">
+        <div class="progress-text">正在替换文件：共 {{ progress.total || '…' }} 个，已替换 {{ progress.replaced }} 个<span v-if="progress.phase==='archiving'">（正在打包快照）</span><span v-else-if="progress.phase==='preparing'">（准备中）</span></div>
+        <div class="progress-bar"><div class="progress-fill" :style="{ width: (progress.total ? Math.min(100, Math.round(progress.replaced / progress.total * 100)) : 0) + '%' }"></div></div>
+      </div>
       <button class="btn-primary" @click="confirmPublish" :disabled="publishing">{{ publishing ? '发布中，请勿关闭页面...' : '确认发布' }}</button>
       <button class="btn-secondary" style="margin-left:10px" @click="cancelPreview" :disabled="publishing">取消</button>
-      <button class="btn-ghost" style="margin-left:10px" @click="navigate('#/sites/'+siteId+'/versions')" :disabled="publishing">返回版本历史</button>
     </div>
   </div>`
 };
@@ -502,6 +487,141 @@ const VersionsPage = {
   </div>`
 };
 
+// ===== 站点设置分区：排除项 excludes / 发布不替换的文件 protect_files / 保留版本数 / 解绑 =====
+const SettingsPage = {
+  props: ['siteId', 'notify', 'navigate'],
+  setup(props) {
+    const loading = ref(true);
+    const saving = ref(false);
+    const form = reactive({ name: '', excludes: '', protect_files: '', keep_count: 10 });
+    const confirmState = reactive({ show: false, busy: false, siteName: '' });
+    const load = async () => {
+      loading.value = true;
+      try {
+        const r = await api('/sites');
+        const s = (r.sites || []).find(x => x.id === props.siteId);
+        if (!s) throw new Error('站点不存在');
+        Object.assign(form, {
+          name: s.name,
+          excludes: (s.excludes || []).join('\n'),
+          protect_files: (s.protect_files || []).join('\n'),
+          keep_count: s.keep_count
+        });
+        confirmState.siteName = s.name;
+      } catch (e) { props.notify(e.message, 'err'); }
+      finally { loading.value = false; }
+    };
+    onMounted(load);
+    const save = async () => {
+      saving.value = true;
+      try {
+        await api('/sites/' + props.siteId, {
+          method: 'PUT',
+          body: {
+            name: form.name,
+            excludes: form.excludes.split('\n').map(s => s.trim()).filter(Boolean),
+            protect_files: form.protect_files.split('\n').map(s => s.trim()).filter(Boolean),
+            keep_count: Number(form.keep_count)
+          }
+        });
+        props.notify('站点设置已保存');
+      } catch (e) { props.notify(e.message, 'err'); }
+      finally { saving.value = false; }
+    };
+    const doUnbind = async () => {
+      confirmState.busy = true;
+      try {
+        await api('/sites/' + props.siteId, { method: 'DELETE' });
+        confirmState.show = false;
+        props.notify('已解绑');
+        props.navigate('#/sites');
+      } catch (e) { props.notify(e.message, 'err'); }
+      finally { confirmState.busy = false; }
+    };
+    return { loading, saving, form, confirmState, save, doUnbind };
+  },
+  template: `
+  <div>
+    <div class="card" v-if="!loading">
+      <div class="card-head"><div class="card-title">站点设置</div></div>
+      <div class="form-row"><label>站点名称</label><input v-model="form.name" /></div>
+      <div class="form-row"><label>排除项 excludes（每行一个 glob，不参与快照 / 统计 / 发布）</label><textarea rows="3" v-model="form.excludes" placeholder="*.log"></textarea></div>
+      <div class="form-row"><label>发布不替换的文件 protect_files（每行一个文件名，大小写不敏感；发布/回滚不覆盖、不删除）</label><textarea rows="2" v-model="form.protect_files" placeholder="web.config"></textarea></div>
+      <div class="form-row"><label>保留版本数（超出自动清理旧版本快照）</label><input type="number" v-model.number="form.keep_count" min="1" /></div>
+      <div class="form-actions">
+        <button class="btn-primary" @click="save" :disabled="saving">{{ saving ? '保存中...' : '保存设置' }}</button>
+      </div>
+    </div>
+    <div class="card" v-else><div class="muted">加载中...</div></div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-title">危险操作</div></div>
+      <p class="prose" style="margin-bottom:12px">解绑后目录内文件不会被删除，但该站点的版本记录与快照将不可见。</p>
+      <button class="btn-danger" @click="confirmState.show=true">解绑站点</button>
+    </div>
+
+    <confirm-modal
+      :show="confirmState.show"
+      title="确认解绑"
+      :message="'确认解绑「' + confirmState.siteName + '」？\\n目录内文件不会被删除，但版本快照记录将不可见。'"
+      confirm-text="确认解绑"
+      danger
+      :busy="confirmState.busy"
+      @confirm="doUnbind"
+      @cancel="confirmState.show=false" />
+  </div>`
+};
+
+// ===== 站点详情页外壳：标题 + 功能 tab（文件/发布/版本/设置），子路由可直达 =====
+const SiteDetailPage = {
+  props: ['siteId', 'tab', 'notify', 'navigate', 'fmtSize', 'fmtTime'],
+  setup(props) {
+    const site = ref(null);
+    const tabs = [
+      { key: 'files', label: '文件浏览' },
+      { key: 'publish', label: '发布' },
+      { key: 'versions', label: '版本历史' },
+      { key: 'settings', label: '站点设置' }
+    ];
+    const active = computed(() => tabs.some(t => t.key === props.tab) ? props.tab : 'files');
+    const loadSite = async () => {
+      try {
+        const r = await api('/sites');
+        site.value = (r.sites || []).find(x => x.id === props.siteId) || null;
+      } catch { site.value = null; }
+    };
+    onMounted(loadSite);
+    watch(() => props.siteId, loadSite);
+    const goTab = k => props.navigate('#/sites/' + props.siteId + (k === 'files' ? '/files' : '/' + k));
+    return { site, tabs, active, goTab };
+  },
+  template: `
+  <div>
+    <div class="page-head">
+      <div>
+        <div class="eyebrow">SITE #{{ siteId }}</div>
+        <div class="page-title">{{ site ? site.name : '站点 #' + siteId }}
+          <span v-if="site && site.locked" class="badge lock">发布中</span>
+        </div>
+        <div class="mono muted" v-if="site" style="margin-top:4px">{{ site.root_path }}</div>
+      </div>
+      <div class="stats-inline" v-if="site">
+        <span>{{ site.fileCount }} 个文件</span><span>{{ $root.fmtSize(site.totalSize) }}</span>
+        <span class="stat-new" v-if="site.latest">最新 v{{ site.latest.id }}</span>
+      </div>
+    </div>
+
+    <div class="detail-tabs">
+      <a v-for="t in tabs" :key="t.key" :class="{ active: active === t.key }" @click.prevent="goTab(t.key)">{{ t.label }}</a>
+    </div>
+
+    <files-page v-if="active==='files'" :site-id="siteId" :notify="notify" :fmt-size="fmtSize" :navigate="navigate" />
+    <publish-page v-else-if="active==='publish'" :site-id="siteId" :notify="notify" :navigate="navigate" />
+    <versions-page v-else-if="active==='versions'" :site-id="siteId" :notify="notify" :fmt-size="fmtSize" :fmt-time="fmtTime" :navigate="navigate" />
+    <settings-page v-else :site-id="siteId" :notify="notify" :navigate="navigate" />
+  </div>`
+};
+
 const AuditPage = {
   props: ['notify', 'fmtTime'],
   setup(props) {
@@ -578,17 +698,22 @@ const App = {
       const h = route.value.replace(/^#/, '');
       if (h.startsWith('/login')) return 'login';
       if (h.startsWith('/audit')) return 'audit';
-      const m = h.match(/^\/sites\/(\d+)\/(\w+)/);
-      if (m) return { name: m[1] && m[2], id: Number(m[1]), kind: m[2] };
+      // 详情页 #/sites/:id（默认 files tab）与子路由 #/sites/:id/{files,publish,versions,settings}
+      const m = h.match(/^\/sites\/(\d+)(?:\/(\w+))?/);
+      if (m) return { name: m[2] || 'files', id: Number(m[1]), kind: m[2] || 'files' };
       return 'sites';
     });
-    // 子页面位置感：面包屑显示"站点 / 站点名 / 当前页"，站点名懒加载
+    // 面包屑：站点 > 详情 > 当前功能
     const siteName = ref('');
-    const kindLabel = { files: '文件浏览', publish: '发布', versions: '版本历史' };
+    const kindLabel = { files: '文件浏览', publish: '发布', versions: '版本历史', settings: '站点设置' };
     const crumbs = computed(() => {
       if (page.value && page.value.kind) {
         if (siteName.value === '' || siteName.value.id !== page.value.id) return null;
-        return [{ label: '站点', hash: '#/sites' }, { label: siteName.value.name, hash: '#/sites/' + page.value.id + '/versions' }, { label: kindLabel[page.value.kind] || page.value.kind, hash: null }];
+        return [
+          { label: '站点', hash: '#/sites' },
+          { label: siteName.value.name, hash: '#/sites/' + page.value.id },
+          { label: kindLabel[page.value.kind] || page.value.kind, hash: null }
+        ];
       }
       if (page.value === 'audit') return [{ label: '站点', hash: '#/sites' }, { label: '审计日志', hash: null }];
       return null;
@@ -634,11 +759,10 @@ const App = {
       <a :class="{active: page==='audit'}" @click.prevent="navigate('#/audit')">审计日志</a>
       <div class="side-nav" v-if="page && page.kind">
         <div class="side-nav-title">当前站点</div>
-        <a @click.prevent="navigate('#/sites/' + page.id + '/files')" :class="{active: page.kind==='files'}">文件浏览</a>
+        <a @click.prevent="navigate('#/sites/' + page.id)" :class="{active: page.kind==='files'}">站点详情 / 文件浏览</a>
         <a @click.prevent="navigate('#/sites/' + page.id + '/publish')" :class="{active: page.kind==='publish'}">发布</a>
         <a @click.prevent="navigate('#/sites/' + page.id + '/versions')" :class="{active: page.kind==='versions'}">版本历史</a>
-        <a @click.prevent="navigate('#/sites/' + page.id + '/versions')" class="side-back">↑ 返回上级（版本历史）</a>
-        <a @click.prevent="navigate('#/sites')" class="side-back">← 去往站点列表</a>
+        <a @click.prevent="navigate('#/sites/' + page.id + '/settings')" :class="{active: page.kind==='settings'}">站点设置</a>
       </div>
       <div class="side-foot"><a @click.prevent="logout">退出 ({{ user.username }})</a></div>
     </nav>
@@ -657,9 +781,7 @@ const App = {
         </div>
       </div>
       <sites-page v-if="page==='sites'" :notify="notify" :fmt-size="fmtSize" :fmt-time="fmtTime" :navigate="navigate" />
-      <files-page v-else-if="page && page.kind==='files'" :site-id="page.id" :notify="notify" :fmt-size="fmtSize" :navigate="navigate" />
-      <publish-page v-else-if="page && page.kind==='publish'" :site-id="page.id" :notify="notify" :navigate="navigate" />
-      <versions-page v-else-if="page && page.kind==='versions'" :site-id="page.id" :notify="notify" :fmt-size="fmtSize" :fmt-time="fmtTime" :navigate="navigate" />
+      <site-detail-page v-else-if="page && page.kind" :site-id="page.id" :tab="page.kind" :notify="notify" :fmt-size="fmtSize" :fmt-time="fmtTime" :navigate="navigate" />
       <audit-page v-else-if="page==='audit'" :notify="notify" :fmt-time="fmtTime" />
     </main>
     <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
@@ -668,6 +790,8 @@ const App = {
 
 createApp(App)
   .component('sites-page', SitesPage)
+  .component('site-detail-page', SiteDetailPage)
+  .component('settings-page', SettingsPage)
   .component('files-page', FilesPage)
   .component('publish-page', PublishPage)
   .component('versions-page', VersionsPage)

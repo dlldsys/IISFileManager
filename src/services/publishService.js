@@ -2,9 +2,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { safeExtract, replaceDir, mergeDir, zipDir, manifestOf } = require('./archiveService');
+const { safeExtract, replaceDir, mergeDir, zipDir, manifestOf, walk } = require('./archiveService');
 const versionService = require('./versionService');
-const { withSiteExcludes, withSiteProtects } = require('./exclude');
+const { withSiteExcludes, withSiteProtects, isProtected } = require('./exclude');
 const audit = require('./auditService');
 
 const locks = new Map();
@@ -42,18 +42,53 @@ async function snapshotCurrent(site, { kind, label, user }) {
 // 发布模式：incremental=增量（只新增/覆盖，不删除站点多余文件）；full=全量（删除后替换）；缺省 full 保持旧行为
 function normalizeMode(mode) { return mode === 'incremental' ? 'incremental' : 'full'; }
 
-async function publish(site, zipFile, { label, user, mode }) {
+// ===== 发布进度（内存记录，前端确认发布后轮询 GET /api/publish/:id/progress）=====
+const progressMap = new Map(); // siteId -> { status, phase, total, replaced, startedAt, finishedAt }
+
+// 以预览清单为基准：total=待替换文件数（不含受保护/排除），每写入一个文件 replaced+1
+function beginReplace(siteId, files) {
+  progressMap.set(siteId, {
+    status: 'running', phase: 'replacing',
+    total: files.length, replaced: 0,
+    startedAt: Date.now(), finishedAt: null
+  });
+}
+function startProgress(siteId) { beginReplace(siteId, []); } // eslint-disable-line no-unused-vars
+function setProgressPhase(siteId, phase, extra = {}) {
+  const p = progressMap.get(siteId);
+  if (p) Object.assign(p, { phase }, extra);
+}
+function finishProgress(siteId, status = 'done', extra = {}) {
+  const p = progressMap.get(siteId);
+  if (p) Object.assign(p, { status, finishedAt: Date.now() }, extra);
+}
+function progressState(siteId) {
+  return progressMap.get(siteId) || null;
+}
+
+async function publish(site, zipFile, { label, user, mode, progressFiles }) {
   const m = normalizeMode(mode);
   if (!tryLock(site.id, user)) throw Object.assign(new Error('该站点正在发布/回滚中'), { code: 'LOCKED' });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-'));
   try {
+    if (progressFiles) beginReplace(site.id, progressFiles);
     const snapshotId = await snapshotCurrent(site, { kind: 'snapshot', label: '发布前旧版备份', user });
     safeExtract(zipFile, path.join(tmp, 'extract'));
     const excludes = withSiteExcludes(site);
     const protects = withSiteProtects(site);
-    if (m === 'incremental') mergeDir(path.join(tmp, 'extract'), site.root_path, excludes, protects);
-    else replaceDir(path.join(tmp, 'extract'), site.root_path, excludes, protects);
+    // 进度 total = 解压目录中实际会被写入的文件数（剔除受保护文件），与 copyEntries 一一对应
+    if (progressFiles) {
+      const toCopy = walk(path.join(tmp, 'extract'), []).filter(f => !isProtected(f.rel, protects)).length;
+      setProgressPhase(site.id, 'replacing', { total: toCopy });
+    }
+    const inc = () => {
+      const p = progressMap.get(site.id);
+      if (p && p.phase === 'replacing') p.replaced += 1;
+    };
+    if (m === 'incremental') mergeDir(path.join(tmp, 'extract'), site.root_path, excludes, protects, inc);
+    else replaceDir(path.join(tmp, 'extract'), site.root_path, excludes, protects, inc);
     const manifest = await manifestOf(site.root_path, excludes);
+    if (progressFiles) setProgressPhase(site.id, 'archiving');
     const vid = versionService.insert(site, { kind: 'publish', label: label || null, user, fileCount: manifest.length, size: 0, mode: m });
     const zipOut = versionService.zipPathFor(site.id, vid);
     fs.mkdirSync(path.dirname(zipOut), { recursive: true });
@@ -63,7 +98,16 @@ async function publish(site, zipFile, { label, user, mode }) {
     versionService.saveManifest(vid, manifest);
     versionService.cleanup(site, user);
     audit.write(user, 'publish', site.id, 'version=' + vid + ' snapshot=' + snapshotId + ' mode=' + m);
+    const p = progressMap.get(site.id);
+    if (p) {
+      if (!p.total) p.total = manifest.length;
+      p.replaced = Math.max(p.replaced, p.total);
+      finishProgress(site.id, 'done');
+    }
     return { versionId: vid, snapshotId, mode: m };
+  } catch (e) {
+    finishProgress(site.id, 'error');
+    throw e;
   } finally {
     unlock(site.id);
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -138,7 +182,10 @@ async function preview(site, zipFile, { label, user, mode }) {
     const inc = new Map(incoming.map(f => [f.path, f]));
     const added = [], modified = [], removed = [];
     for (const [p, f] of inc) if (!cur.has(p)) added.push({ path: p, size: f.size });
-    for (const [p, f] of cur) if (!inc.has(p)) removed.push({ path: p, size: f.size, note: m === 'incremental' ? '增量不删除' : '' });
+    // 增量模式：不显示删除类目（removed 恒为空数组）；全量模式才列出将被删除的文件
+    if (m !== 'incremental') {
+      for (const [p, f] of cur) if (!inc.has(p)) removed.push({ path: p, size: f.size });
+    }
     for (const [p, f] of inc) {
       const old = cur.get(p);
       if (old && old.sha256 !== f.sha256) modified.push({ path: p, from: old.size, to: f.size });
@@ -148,7 +195,7 @@ async function preview(site, zipFile, { label, user, mode }) {
     purgeExpiredPreviews();
     const token = crypto.randomBytes(16).toString('hex');
     const expiresAt = Date.now() + PREVIEW_TTL_MS;
-    previews.set(token, { token, siteId: site.id, zipFile, label: label || null, mode: m, user, createdAt: Date.now(), expiresAt });
+    previews.set(token, { token, siteId: site.id, zipFile, label: label || null, mode: m, user, createdAt: Date.now(), expiresAt, added, modified });
     return {
       token, added, modified, removed, skipped, mode: m,
       currentCount: current.length, incomingCount: incoming.length,
@@ -167,9 +214,12 @@ async function confirm(site, token, { user }) {
     throw Object.assign(new Error('预览不存在或已过期，请重新上传'), { code: 'NOTFOUND' });
   }
   try {
-    const r = await publish(site, p.zipFile, { label: p.label, mode: p.mode, user });
+    // 以预览清单（added+modified，已剔除受保护文件）作为进度 total 基准
+    const progressFiles = (p.added || []).concat(p.modified || []);
+    const r = await publish(site, p.zipFile, { label: p.label, mode: p.mode, user, progressFiles });
     previews.delete(token);
-    return r;
+    const st = progressState(site.id);
+    return { ...r, total: st ? st.total : progressFiles.length, replaced: st ? st.replaced : progressFiles.length };
   } catch (e) {
     // LOCKED 时 publish 在加锁前抛出、zip 未被删除，保留 token 供重试
     if (e.code !== 'LOCKED') previews.delete(token);
@@ -187,4 +237,4 @@ function cancelPreview(site, token) {
   return true;
 }
 
-module.exports = { publish, rollback, preview, confirm, cancelPreview, tryLock, unlock, lockState };
+module.exports = { publish, rollback, preview, confirm, cancelPreview, tryLock, unlock, lockState, progressState, startProgress, finishProgress };

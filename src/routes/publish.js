@@ -6,14 +6,18 @@ const os = require('os');
 const siteService = require('../services/siteService');
 const publishService = require('../services/publishService');
 const { requireAuth } = require('../middleware/auth');
-const config = require('../config');
 
 const router = express.Router();
 router.use(requireAuth);
 
-const upload = multer({
-  dest: path.join(os.tmpdir(), 'fp-uploads'),
-  limits: { fileSize: config.maxUploadSize }
+// 上传 zip 不限制大小（不设置 multer 上传上限，config 不再有 maxUploadSize）
+const upload = multer({ dest: path.join(os.tmpdir(), 'fp-uploads') });
+
+// 发布进度查询（内存记录，供前端轮询渲染进度条）
+router.get('/:id/progress', (req, res) => {
+  const site = getSite(req, res);
+  if (!site) return;
+  res.json(publishService.progressState(site.id) || { status: 'idle', phase: 'idle', total: 0, replaced: 0 });
 });
 
 function getSite(req, res) {

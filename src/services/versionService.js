@@ -51,11 +51,14 @@ function diffVersions(aId, bId) {
   return { added, modified, removed };
 }
 
-// 删除版本：记录 + version_files + 快照 zip 一并清理（需在无锁时调用）
+// 删除版本：记录 + version_files + 快照 zip 一并清理（需在无锁时调用）；
+// zip 已不在磁盘时跳过文件删除，只删数据库记录，不报错
 function removeVersion(siteId, versionId) {
   const v = getVersion(siteId, versionId);
   if (!v) throw Object.assign(new Error('版本不存在'), { code: 'NOTFOUND' });
-  if (v.zip_path) fs.rmSync(v.zip_path, { force: true });
+  if (v.zip_path) {
+    try { fs.rmSync(v.zip_path, { force: true }); } catch {}
+  }
   db.prepare('DELETE FROM version_files WHERE version_id = ?').run(versionId);
   db.prepare('DELETE FROM versions WHERE id = ?').run(versionId);
   return v;
@@ -66,7 +69,10 @@ function cleanup(site, user) {
   const rows = db.prepare('SELECT id, zip_path FROM versions WHERE site_id = ? ORDER BY id DESC').all(site.id);
   const excess = rows.slice(keep);
   for (const r of excess) {
-    fs.rmSync(r.zip_path, { force: true });
+    // 快照 zip 已缺失时跳过文件删除，只清理记录
+    if (r.zip_path) {
+      try { fs.rmSync(r.zip_path, { force: true }); } catch {}
+    }
     db.prepare('DELETE FROM version_files WHERE version_id = ?').run(r.id);
     db.prepare('DELETE FROM versions WHERE id = ?').run(r.id);
     audit.write(user, 'cleanup', site.id, 'removed version=' + r.id);
