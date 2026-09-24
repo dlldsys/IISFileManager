@@ -2,6 +2,7 @@ const minimatch = require('./minimatch');
 const config = require('../config');
 
 function parseList(raw) {
+  if (Array.isArray(raw)) return raw; // normalizeSite 已把 JSON 解析成数组，JSON.parse(数组) 会抛错回落默认
   try {
     const arr = JSON.parse(raw || '[]');
     return Array.isArray(arr) ? arr : [];
