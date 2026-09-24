@@ -1,0 +1,19 @@
+{
+  "name": "file-proxy",
+  "version": "1.0.0",
+  "description": "IIS file version management system",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test/e2e.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "multer": "^2.0.2",
+    "pino": "^9.6.0"
+  }
+}

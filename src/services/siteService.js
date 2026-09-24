@@ -1,0 +1,84 @@
+const fs = require('fs');
+const path = require('path');
+const db = require('../db');
+const config = require('../config');
+
+function listSites() {
+  return db.prepare('SELECT * FROM sites ORDER BY id').all().map(normalizeSite);
+}
+
+function normalizeSite(s) {
+  if (!s) return s;
+  s.excludes = JSON.parse(s.excludes || '[]');
+  s.protect_files = JSON.parse(s.protect_files || '[]');
+  return s;
+}
+
+function getSite(id) {
+  const s = db.prepare('SELECT * FROM sites WHERE id = ?').get(id);
+  return normalizeSite(s);
+}
+
+function addSite({ name, root_path, excludes, keep_count, protect_files }) {
+  const abs = path.resolve(root_path);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) throw new Error('目录不存在: ' + abs);
+  const info = db.prepare('INSERT INTO sites (name, root_path, excludes, keep_count, protect_files) VALUES (?, ?, ?, ?, ?)')
+    .run(name.trim(), abs, JSON.stringify(excludes || []), keep_count || 10, JSON.stringify(protect_files || config.defaultProtects));
+  return getSite(info.lastInsertRowid);
+}
+
+function updateSite(id, { name, excludes, keep_count, protect_files }) {
+  const s = getSite(id);
+  if (!s) throw new Error('站点不存在');
+  let rawExcludes = s.excludes;
+  if (excludes != null) rawExcludes = JSON.stringify(excludes);
+  else if (Array.isArray(rawExcludes)) rawExcludes = JSON.stringify(rawExcludes);
+  let rawProtect = JSON.stringify(s.protect_files || []);
+  if (protect_files != null) rawProtect = JSON.stringify(protect_files);
+  db.prepare('UPDATE sites SET name = ?, excludes = ?, keep_count = ?, protect_files = ? WHERE id = ?').run(
+    name != null ? name : s.name,
+    rawExcludes,
+    keep_count != null ? keep_count : s.keep_count,
+    rawProtect,
+    id
+  );
+  return getSite(id);
+}
+
+function removeSite(id) {
+  db.prepare('DELETE FROM sites WHERE id = ?').run(id);
+}
+
+function statDir(site) {
+  const { walk } = require('./archiveService');
+  const { withSiteExcludes } = require('./exclude');
+  const files = walk(site.root_path, withSiteExcludes(site));
+  return { fileCount: files.length, totalSize: files.reduce((a, f) => a + f.size, 0) };
+}
+
+function resolveIn(site, rel) {
+  const abs = path.resolve(site.root_path, rel || '');
+  const root = path.resolve(site.root_path);
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw new Error('路径越界');
+  return abs;
+}
+
+function browse(site, rel) {
+  const abs = resolveIn(site, rel);
+  if (!fs.existsSync(abs)) return { path: rel || '', dirs: [], files: [] };
+  const entries = fs.readdirSync(abs, { withFileTypes: true });
+  const dirs = [], files = [];
+  for (const e of entries) {
+    const childRel = (rel ? rel + '/' : '') + e.name;
+    if (e.isDirectory()) dirs.push({ name: e.name, path: childRel });
+    else {
+      const st = fs.statSync(path.join(abs, e.name));
+      files.push({ name: e.name, path: childRel, size: st.size, mtime: st.mtime.toISOString() });
+    }
+  }
+  dirs.sort((a, b) => a.name.localeCompare(b.name));
+  files.sort((a, b) => a.name.localeCompare(b.name));
+  return { path: rel || '', dirs, files };
+}
+
+module.exports = { listSites, getSite, addSite, updateSite, removeSite, statDir, browse, resolveIn };
