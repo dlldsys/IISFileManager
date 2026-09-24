@@ -35,6 +35,17 @@ router.put('/:id', (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// 批量追加接口（文件浏览多选 → 加入排除项 / 发布不替换）：只追加不覆盖，写审计日志
+router.put('/:id/protect', (req, res) => {
+  try {
+    const body = req.body || {};
+    const site = siteService.appendSiteSettings(Number(req.params.id), body);
+    audit.write(req.session.user.username, 'site.update', site.id,
+      JSON.stringify({ appended: { excludes: body.excludes || [], protect_files: body.protect_files || [] } }));
+    res.json({ site });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 router.delete('/:id', (req, res) => {
   try {
     const id = Number(req.params.id);

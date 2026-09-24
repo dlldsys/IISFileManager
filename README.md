@@ -4,6 +4,8 @@ Windows 上的 IIS 文件版本管理系统：绑定站点工作目录，上传 
 
 ## 运行
 
+支持 Node 20+（Node 22+ 用内建 `node:sqlite`，Node 20 回退纯 WASM 驱动，两端均无原生编译依赖）。
+
 ```bash
 npm install
 npm start          # 默认 http://localhost:3000
@@ -39,14 +41,14 @@ pm2 startup       # 开机自启提示按输出执行
 启动服务后另开终端：
 
 ```bash
-npm test           # node test/e2e.js，21 项端到端断言
+npm test           # node test/e2e.js，60 项端到端断言
 ```
 
 ## 结构
 
 ```
 src/server.js              入口 + 路由挂载
-src/db.js                  node:sqlite 建表 + 管理员初始化
+src/db.js                  数据驱动切换（node:sqlite / node-sqlite3-wasm）+ 建表 + 管理员初始化
 src/services/              archive/version/publish/file/site/audit
 src/routes/                auth/sites/files/publish/versions/audit
 public/                    前端 SPA（Vue3 CDN，无构建）
@@ -55,6 +57,6 @@ data/snapshots/<siteId>/   版本快照 zip
 
 ## 说明
 
-- 存储用 Node 内建 `node:sqlite`（需 Node 22+，本项目在 Node 26 验证），无原生编译依赖。
+- 支持 Node 20+：Node 22+ 用内建 `node:sqlite`，Node 20 自动回退纯 WASM 的 `node-sqlite3-wasm`，均无原生编译依赖；日志模式统一 DELETE（WASM 不支持 WAL）。
 - 替换采用"先快照、临时目录解压、再覆盖"，失败时现有文件不受损坏。
 - 发布/回滚期间站点锁定，界面显示"发布中"。

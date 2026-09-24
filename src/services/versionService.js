@@ -53,6 +53,22 @@ function diffVersions(aId, bId) {
 
 // 删除版本：记录 + version_files + 快照 zip 一并清理（需在无锁时调用）；
 // zip 已不在磁盘时跳过文件删除，只删数据库记录，不报错
+// 设置当前版本（发布成功后 / 回滚目标）
+function setCurrent(siteId, versionId) {
+  db.prepare('UPDATE sites SET current_version_id = ? WHERE id = ?').run(versionId, siteId);
+}
+
+// 指向的版本被删（手动删除 / keep_count 清理）时回退：置空或改指最近一个剩余版本
+function reconcileCurrent(siteId) {
+  const s = db.prepare('SELECT current_version_id FROM sites WHERE id = ?').get(siteId);
+  if (!s || s.current_version_id == null) return s ? s.current_version_id : null;
+  if (db.prepare('SELECT id FROM versions WHERE id = ?').get(s.current_version_id)) return s.current_version_id;
+  const latest = db.prepare('SELECT id FROM versions WHERE site_id = ? ORDER BY id DESC LIMIT 1').get(siteId);
+  const next = latest ? latest.id : null;
+  db.prepare('UPDATE sites SET current_version_id = ? WHERE id = ?').run(next, siteId);
+  return next;
+}
+
 function removeVersion(siteId, versionId) {
   const v = getVersion(siteId, versionId);
   if (!v) throw Object.assign(new Error('版本不存在'), { code: 'NOTFOUND' });
@@ -61,6 +77,8 @@ function removeVersion(siteId, versionId) {
   }
   db.prepare('DELETE FROM version_files WHERE version_id = ?').run(versionId);
   db.prepare('DELETE FROM versions WHERE id = ?').run(versionId);
+  // 删除的若是当前版本 → 回退 current 指向（置空或最近剩余版本）
+  reconcileCurrent(siteId);
   return v;
 }
 
@@ -77,7 +95,8 @@ function cleanup(site, user) {
     db.prepare('DELETE FROM versions WHERE id = ?').run(r.id);
     audit.write(user, 'cleanup', site.id, 'removed version=' + r.id);
   }
+  if (excess.length) reconcileCurrent(site.id); // 清掉的可能是 current_version_id 指向的版本
   return excess.length;
 }
 
-module.exports = { zipPathFor, insert, setZipPath, saveManifest, listVersions, getVersion, versionFiles, diffVersions, removeVersion, cleanup };
+module.exports = { zipPathFor, insert, setZipPath, saveManifest, listVersions, getVersion, versionFiles, diffVersions, removeVersion, cleanup, setCurrent, reconcileCurrent };

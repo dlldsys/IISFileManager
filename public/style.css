@@ -218,6 +218,29 @@ tbody tr:hover td { background: color-mix(in oklab, var(--color-bone) 70%, var(-
 tbody tr:last-child td { border-bottom: none; }
 td .mono, td.mono { font-family: var(--font-berkeleymono); font-size: 12px; }
 
+/* ---------- 文件多选批量设置 ---------- */
+th.cell-check, td.cell-check { width: 34px; padding-left: var(--spacing-12); padding-right: 0; }
+td.cell-check input[type="checkbox"], th.cell-check input[type="checkbox"] { accent-color: var(--color-forest); cursor: pointer; }
+.bulk-bar {
+  display: flex; align-items: center; gap: var(--spacing-8); flex-wrap: wrap;
+  padding: 8px 12px; margin-bottom: var(--spacing-12);
+  background: var(--color-parchment);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-cards);
+  font-size: 13px;
+}
+.bulk-bar .count { font-family: var(--font-berkeleymono); font-size: 12px; color: var(--color-ash); margin-right: var(--spacing-4); }
+
+/* ---------- 版本历史：当前版本行标识（Ember 仅文字/细条，禁大面积色块） ---------- */
+tbody tr.row-current td { background: color-mix(in oklab, var(--color-bone) 55%, var(--color-parchment)); }
+tbody tr.row-current:hover td { background: color-mix(in oklab, var(--color-bone) 40%, var(--color-linen)); }
+tbody tr.row-current td:first-child { box-shadow: inset 3px 0 0 0 var(--color-ember); }
+.badge.current {
+  color: var(--color-ember);
+  border-color: color-mix(in oklab, var(--color-ember) 45%, transparent);
+  font-weight: 500;
+}
+
 /* ---------- 徽标（mono 元数据标签，透明底彩色字） ---------- */
 .badge {
   display: inline-block;

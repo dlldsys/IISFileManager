@@ -145,11 +145,47 @@ const FilesPage = {
     const data = ref({ dirs: [], files: [] });
     const editingFile = ref(null);
     const editor = reactive({ path: '', content: '', dirty: false, saving: false });
+    // ===== 多选批量设置：选中项为站点根相对路径（目录行与文件行均可选） =====
+    const selected = ref([]);
+    const allPaths = computed(() => data.value.dirs.map(d => d.path).concat(data.value.files.map(f => f.path)));
+    const allChecked = computed(() => allPaths.value.length > 0 && selected.value.length === allPaths.value.length);
+    const someChecked = computed(() => selected.value.length > 0 && !allChecked.value);
+    const selAllBox = ref(null);
+    watch([allChecked, someChecked], () => { // 表头半选态（Vue 不渲染 indeterminate，手动写 DOM）
+      if (selAllBox.value) selAllBox.value.indeterminate = someChecked.value;
+    });
+    const toggleOne = p => {
+      selected.value = selected.value.includes(p)
+        ? selected.value.filter(x => x !== p)
+        : selected.value.concat(p);
+    };
+    const toggleAll = () => { selected.value = allChecked.value ? [] : allPaths.value.slice(); };
+    const clearSel = () => { selected.value = []; };
+    // 批量追加：文件用根相对路径（排除）或文件名（保护，大小写不敏感语义）；目录用相对路径覆盖其下全部
+    const applyBulk = async kind => {
+      if (!selected.value.length) return;
+      const dirSet = new Set(data.value.dirs.map(d => d.path));
+      const body = { excludes: [], protect_files: [] };
+      for (const p of selected.value) {
+        const name = p.split('/').pop();
+        if (kind === 'excludes') body.excludes.push(p);
+        else body.protect_files.push(dirSet.has(p) ? p : name);
+      }
+      try {
+        await api(`/sites/${props.siteId}/protect`, { method: 'PUT', body });
+        props.notify(kind === 'excludes'
+          ? '已加入排除项（将不参与快照与统计）'
+          : '已加入发布不替换（快照仍包含，发布时跳过）');
+        clearSel();
+        load(current.value); // 刷新文件列表（排除项生效后统计/清单会变化）
+      } catch (e) { props.notify(e.message, 'err'); }
+    };
     const load = async (p = current.value) => {
       try {
         data.value = await api(`/sites/${props.siteId}/browse?path=${encodeURIComponent(p)}`);
         current.value = data.value.path;
         editingFile.value = null;
+        selected.value = []; // 换目录清空选择
       } catch (e) { props.notify(e.message, 'err'); }
     };
     onMounted(() => load(''));
@@ -179,7 +215,8 @@ const FilesPage = {
       } catch (e) { props.notify(e.message, 'err'); }
       finally { editor.saving = false; }
     };
-    return { current, data, editingFile, editor, load, go, up, openFile, save };
+    return { current, data, editingFile, editor, load, go, up, openFile, save,
+      selected, allChecked, someChecked, selAllBox, toggleOne, toggleAll, clearSel, applyBulk };
   },
   template: `
   <div>
@@ -190,13 +227,24 @@ const FilesPage = {
         <div class="breadcrumb"><a @click="go('')">根目录</a><template v-for="p in current.split('/').filter(Boolean)" :key="p"> / <a @click="go(current.split('/').slice(0, current.split('/').filter(Boolean).indexOf(p)+1).join('/'))">{{ p }}</a></template></div>
         <span class="muted">{{ data.files.length }} 文件 / {{ data.dirs.length }} 目录</span>
       </div>
+      <div class="bulk-bar" v-if="selected.length">
+        <span class="count">已选 {{ selected.length }} 项</span>
+        <button class="btn-secondary" @click="applyBulk('excludes')">加入排除项</button>
+        <button class="btn-secondary" @click="applyBulk('protect')">加入发布不替换</button>
+        <button class="btn-ghost" @click="clearSel">取消选择</button>
+      </div>
       <table>
-        <thead><tr><th>名称</th><th style="width:110px">大小</th><th style="width:170px">修改时间</th></tr></thead>
+        <thead><tr>
+          <th class="cell-check"><input type="checkbox" ref="selAllBox" :checked="allChecked" @change="toggleAll" title="全选/取消全选" /></th>
+          <th>名称</th><th style="width:110px">大小</th><th style="width:170px">修改时间</th>
+        </tr></thead>
         <tbody>
           <tr v-for="d in data.dirs" :key="'d'+d.path" @click="go(d.path)" style="cursor:pointer">
+            <td class="cell-check"><input type="checkbox" :checked="selected.includes(d.path)" @click.stop @change="toggleOne(d.path)" :title="'选择目录 '+d.name" /></td>
             <td>📁 {{ d.name }}</td><td class="mono">-</td><td class="mono">-</td>
           </tr>
           <tr v-for="f in data.files" :key="'f'+f.path" @click="openFile(f)" style="cursor:pointer">
+            <td class="cell-check"><input type="checkbox" :checked="selected.includes(f.path)" @click.stop @change="toggleOne(f.path)" :title="'选择文件 '+f.name" /></td>
             <td>📄 {{ f.name }}</td><td class="mono">{{ fmtSize(f.size) }}</td><td class="mono">{{ f.mtime.replace('T',' ').slice(0,19) }}</td>
           </tr>
         </tbody>
@@ -352,6 +400,7 @@ const VersionsPage = {
   setup(props) {
     const versions = ref([]);
     const locked = ref(null);
+    const currentVersionId = ref(null); // 当前生效版本（回滚/发布后由后端记录）
     const viewFiles = ref(null);
     const viewFilesList = ref([]);
     const diffOpen = ref(false);
@@ -363,6 +412,7 @@ const VersionsPage = {
         const r = await api(`/sites/${props.siteId}/versions`);
         versions.value = r.versions;
         locked.value = r.locked;
+        currentVersionId.value = r.currentVersionId || null;
       } catch (e) { props.notify(e.message, 'err'); }
     };
     onMounted(load);
@@ -381,8 +431,7 @@ const VersionsPage = {
       } catch (e) { props.notify(e.message, 'err'); }
     };
     // 回滚确认：应用内弹窗（仅按钮关闭）
-    const askRollback = v => { confirmState.version = v; confirmState.show = true; };
-    const doRollback = async () => {
+    const askRollback = v => { confirmState.version = v; confirmState.show = true; };    const doRollback = async () => {
       confirmState.busy = true;
       try {
         const r = await api(`/sites/${props.siteId}/rollback`, { method: 'POST', body: { versionId: confirmState.version.id } });
@@ -411,7 +460,7 @@ const VersionsPage = {
       } catch (e) { props.notify(e.message, 'err'); }
       finally { delState.busy = false; }
     };
-    return { versions, locked, viewFiles, viewFilesList, diffOpen, selA, selB, diff, confirmState, delState, load, showFiles, doDiff, askRollback, doRollback, download, askDelete, doDelete };
+    return { versions, locked, currentVersionId, viewFiles, viewFilesList, diffOpen, selA, selB, diff, confirmState, delState, load, showFiles, doDiff, askRollback, doRollback, download, askDelete, doDelete };
   },
   template: `
   <div>
@@ -428,8 +477,8 @@ const VersionsPage = {
       <table>
         <thead><tr><th>版本</th><th>类型</th><th>说明</th><th>文件数</th><th>大小</th><th>操作人</th><th>时间</th><th style="width:240px">操作</th></tr></thead>
         <tbody>
-          <tr v-for="v in versions" :key="v.id">
-            <td class="mono">v{{ v.id }}</td>
+          <tr v-for="v in versions" :key="v.id" :class="{ 'row-current': v.id === currentVersionId }">
+            <td class="mono">v{{ v.id }} <span v-if="v.id === currentVersionId" class="badge current">当前</span></td>
             <td><span class="badge" :class="v.kind==='rollback'?'rollback':(v.kind==='publish'?'publish':'snapshot')">{{ v.kind }}</span></td>
             <td>{{ v.label || '-' }}</td>
             <td class="mono">{{ v.file_count }}</td>
@@ -439,7 +488,7 @@ const VersionsPage = {
             <td class="row-actions">
               <button class="btn-ghost" @click="showFiles(v)">文件清单</button>
               <button class="btn-ghost" @click="download(v)">下载</button>
-              <button class="btn-danger" :disabled="locked" @click="askRollback(v)">回滚</button>
+              <button class="btn-danger" :disabled="locked || v.id === currentVersionId" :title="v.id === currentVersionId ? '已是当前版本' : ''" @click="askRollback(v)">回滚</button>
               <button class="btn-danger" :disabled="locked" @click="askDelete(v)">删除</button>
             </td>
           </tr>

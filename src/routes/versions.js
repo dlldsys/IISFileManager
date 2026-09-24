@@ -12,7 +12,11 @@ router.use(requireAuth);
 router.get('/sites/:id/versions', (req, res) => {
   const site = siteService.getSite(Number(req.params.id));
   if (!site) return res.status(404).json({ error: '站点不存在' });
-  res.json({ versions: versionService.listVersions(site.id), locked: publishService.lockState(site.id) });
+  res.json({
+    versions: versionService.listVersions(site.id),
+    locked: publishService.lockState(site.id),
+    currentVersionId: site.current_version_id || null
+  });
 });
 
 router.get('/sites/:id/versions/:vid/files', (req, res) => {
@@ -58,9 +62,12 @@ router.delete('/sites/:id/versions/:vid', (req, res) => {
     if (publishService.lockState(site.id))
       return res.status(409).json({ error: '该站点正在发布/回滚中，禁止删除版本' });
     const v = versionService.removeVersion(site.id, Number(req.params.vid));
+    // 删除当前版本后可能已回退，审计里带上回退后的 current
+    const after = siteService.getSite(site.id);
     audit.write(req.session.user.username, 'version.delete', site.id,
-      'version=' + v.id + ' latest=' + (versionService.listVersions(site.id)[0] || {}).id);
-    res.json({ ok: true, versionId: v.id });
+      'version=' + v.id + ' latest=' + (versionService.listVersions(site.id)[0] || {}).id +
+      ' current=' + (after.current_version_id == null ? 'none' : after.current_version_id));
+    res.json({ ok: true, versionId: v.id, currentVersionId: after.current_version_id || null });
   } catch (e) {
     res.status(e.code === 'NOTFOUND' ? 404 : 400).json({ error: e.message });
   }

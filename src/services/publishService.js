@@ -96,6 +96,7 @@ async function publish(site, zipFile, { label, user, mode, progressFiles }) {
     db_setSize(vid, size);
     versionService.setZipPath(vid, zipOut);
     versionService.saveManifest(vid, manifest);
+    versionService.setCurrent(site.id, vid);
     versionService.cleanup(site, user);
     audit.write(user, 'publish', site.id, 'version=' + vid + ' snapshot=' + snapshotId + ' mode=' + m);
     const p = progressMap.get(site.id);
@@ -117,6 +118,7 @@ async function publish(site, zipFile, { label, user, mode, progressFiles }) {
 
 // 回滚 = 彻底还原：先快照当前，然后清空站点目录（保留保护文件与排除文件），
 // 再把目标版本 zip 的全部内容解压回去（保护文件仍跳过），使非保护、非排除内容与该历史版本完全一致。
+// 回滚不创建新版本：只把 sites.current_version_id 指向目标版本。
 async function rollback(site, versionId, { user }) {
   const ver = versionService.getVersion(site.id, versionId);
   if (!ver) throw Object.assign(new Error('版本不存在'), { code: 'NOTFOUND' });
@@ -124,22 +126,14 @@ async function rollback(site, versionId, { user }) {
   if (!tryLock(site.id, user)) throw Object.assign(new Error('该站点正在发布/回滚中'), { code: 'LOCKED' });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-'));
   try {
-    await snapshotCurrent(site, { kind: 'snapshot', label: '回滚前旧版备份', user });
+    // 彻底还原（保留保护文件与排除文件）；回滚不创建新版本，只记录 current_version_id
     safeExtract(ver.zip_path, path.join(tmp, 'extract'));
     const excludes = withSiteExcludes(site);
     const protects = withSiteProtects(site);
     replaceDir(path.join(tmp, 'extract'), site.root_path, excludes, protects);
-    const manifest = await manifestOf(site.root_path, excludes);
-    const vid = versionService.insert(site, { kind: 'rollback', label: '回滚到 v' + versionId, user, fileCount: manifest.length, size: 0, mode: 'full' });
-    const zipOut = versionService.zipPathFor(site.id, vid);
-    fs.mkdirSync(path.dirname(zipOut), { recursive: true });
-    const { size } = await zipDir(site.root_path, excludes, zipOut);
-    db_setSize(vid, size);
-    versionService.setZipPath(vid, zipOut);
-    versionService.saveManifest(vid, manifest);
-    versionService.cleanup(site, user);
-    audit.write(user, 'rollback', site.id, 'to=' + versionId + ' new=' + vid);
-    return { versionId: vid };
+    versionService.setCurrent(site.id, versionId);
+    audit.write(user, 'rollback', site.id, 'to=' + versionId);
+    return { versionId };
   } finally {
     unlock(site.id);
     fs.rmSync(tmp, { recursive: true, force: true });

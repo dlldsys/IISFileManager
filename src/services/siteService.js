@@ -48,6 +48,25 @@ function updateSite(id, { name, excludes, keep_count, protect_files }) {
   return getSite(id);
 }
 
+// 批量追加排除项 / 发布不替换文件（文件多选批量设置）：只追加、去重（大小写不敏感），不覆盖原值
+function appendSiteSettings(id, { excludes, protect_files }) {
+  const s = getSite(id);
+  if (!s) throw new Error('站点不存在');
+  const merge = (base, extra) => {
+    const out = (base || []).slice();
+    for (const raw of extra || []) {
+      const v = String(raw == null ? '' : raw).trim();
+      if (!v) continue;
+      if (!out.some(x => String(x).toLowerCase() === v.toLowerCase())) out.push(v);
+    }
+    return out;
+  };
+  const patch = {};
+  if (excludes != null) patch.excludes = merge(s.excludes, excludes);
+  if (protect_files != null) patch.protect_files = merge(s.protect_files, protect_files);
+  return updateSite(id, patch);
+}
+
 function removeSite(id) {
   db.prepare('DELETE FROM sites WHERE id = ?').run(id);
 }
@@ -84,4 +103,4 @@ function browse(site, rel) {
   return { path: rel || '', dirs, files };
 }
 
-module.exports = { listSites, getSite, addSite, updateSite, removeSite, statDir, browse, resolveIn };
+module.exports = { listSites, getSite, addSite, updateSite, appendSiteSettings, removeSite, statDir, browse, resolveIn };

@@ -187,9 +187,16 @@ async function publishZip(siteId, file, label, mode) {
   r = await req('GET', `/sites/${siteId}/file?path=index.html`);
   check('edit visible', r.data.content.includes('edited'), "'" + r.data.content + "'");
 
-  // 9. 回滚到发布 v1（index.html 应变回 v1）
+  // 9. 回滚到发布 v1（index.html 应变回 v1）——回滚不创建新版本，只记录 current_version_id
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  const countBeforeRollback = vs.data.versions.length;
   r = await req('POST', `/sites/${siteId}/rollback`, { versionId: vPub1 });
-  check('rollback', r.code === 200 && r.data.versionId, 'code=' + r.code + ' ' + (r.data.error || ''));
+  check('rollback', r.code === 200 && r.data.versionId === vPub1, 'code=' + r.code + ' ' + (r.data.error || ''));
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  check('rollback adds no version', vs.data.versions.length === countBeforeRollback,
+    'before=' + countBeforeRollback + ' after=' + vs.data.versions.length);
+  check('rollback sets current_version_id', vs.data.currentVersionId === vPub1,
+    'current=' + vs.data.currentVersionId + ' target=' + vPub1);
   r = await req('GET', `/sites/${siteId}/file?path=index.html`);
   check('content after rollback = v1', r.code === 200 && r.data.content.includes('v1'), "'" + r.data.content + "'");
 
@@ -257,6 +264,9 @@ async function publishZip(siteId, file, label, mode) {
   check('full publish', fullPub.code === 200 && fullPub.data.versionId && fullPub.data.mode === 'full',
     'code=' + fullPub.code + ' ' + (fullPub.data.error || ''));
   const vTarget = fullPub.data.versionId;
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  check('publish points current to new version', vs.data.currentVersionId === vTarget,
+    'current=' + vs.data.currentVersionId + ' new=' + vTarget);
   r = await req('GET', `/sites/${siteId}/browse?path=`);
   const namesFull = r.data.files.map(f => f.name);
   check('full publish deletes stray file', !namesFull.includes('stray.txt'), namesFull.join(','));
@@ -266,8 +276,14 @@ async function publishZip(siteId, file, label, mode) {
   // 15d. 制造偏差后彻底回滚：目录内容与目标版本完全一致
   await req('PUT', `/sites/${siteId}/file`, { path: 'index.html', content: '<h1>diverged</h1>' });
   fs.writeFileSync(path.join(siteDir, 'stray.txt'), 'back again');
+  const countBeforeThorough = (await req('GET', `/sites/${siteId}/versions`)).data.versions.length;
   r = await req('POST', `/sites/${siteId}/rollback`, { versionId: vTarget });
-  check('thorough rollback', r.code === 200 && r.data.versionId, 'code=' + r.code + ' ' + (r.data.error || ''));
+  check('thorough rollback', r.code === 200 && r.data.versionId === vTarget, 'code=' + r.code + ' ' + (r.data.error || ''));
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  check('thorough rollback adds no version', vs.data.versions.length === countBeforeThorough,
+    'before=' + countBeforeThorough + ' after=' + vs.data.versions.length);
+  check('thorough rollback current = target', vs.data.currentVersionId === vTarget,
+    'current=' + vs.data.currentVersionId + ' target=' + vTarget);
   // 逐文件 sha256 对比：站点非排除文件集合与目标版本 version_files 完全一致
   const shaFile = f => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
   const siteSha = new Map();
@@ -304,6 +320,19 @@ async function publishZip(siteId, file, label, mode) {
   // 删除不存在的版本 → 404
   r = await req('DELETE', `/sites/${siteId}/versions/${delId}`);
   check('delete missing version 404', r.code === 404, 'code=' + r.code);
+
+  // 15f. 删除当前版本：current_version_id 回退到最近剩余版本，不报错
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  check('current exists before delete', vs.data.currentVersionId != null &&
+    vs.data.versions.some(v => v.id === vs.data.currentVersionId), 'current=' + vs.data.currentVersionId);
+  const curVid = vs.data.currentVersionId;
+  r = await req('DELETE', `/sites/${siteId}/versions/${curVid}`);
+  check('delete current version ok', r.code === 200 && r.data.ok === true,
+    'code=' + r.code + ' ' + (r.data.error || ''));
+  vs = await req('GET', `/sites/${siteId}/versions`);
+  check('current falls back after delete', vs.data.currentVersionId !== curVid &&
+    (vs.data.currentVersionId == null || vs.data.versions.some(v => v.id === vs.data.currentVersionId)),
+    'current=' + vs.data.currentVersionId + ' prev=' + curVid);
 
   // ===== 16. 本批新增断言 =====
 
@@ -357,6 +386,20 @@ async function publishZip(siteId, file, label, mode) {
   vs = await req('GET', `/sites/${siteId}/versions`);
   check('missing-zip version record removed', !vs.data.versions.some(v => v.id === victim.id),
     'count=' + vs.data.versions.length);
+
+  // 16e. 多选批量设置接口：PUT /sites/:id/protect 只追加不覆盖（文件相对路径 / 文件名语义）
+  r = await req('PUT', `/sites/${siteId}/protect`, { excludes: ['assets/vendor'], protect_files: ['index.html'] });
+  check('batch append excludes', r.code === 200 && r.data.site.excludes.includes('assets/vendor') &&
+    r.data.site.excludes.includes('*.log'),
+    'code=' + r.code + ' excludes=' + JSON.stringify(r.data.site && r.data.site.excludes));
+  check('batch append protect_files keeps default', r.code === 200 &&
+    r.data.site.protect_files.includes('index.html') &&
+    r.data.site.protect_files.some(p => p.toLowerCase() === 'web.config'),
+    'protect=' + JSON.stringify(r.data.site && r.data.site.protect_files));
+  r = await req('GET', '/audit?action=site.update');
+  check('batch append writes audit', r.code === 200 &&
+    (r.data.logs || []).some(l => String(l.detail || '').includes('appended')),
+    'logs=' + (r.data.logs && r.data.logs.length));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
